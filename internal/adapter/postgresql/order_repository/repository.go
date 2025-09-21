@@ -2,6 +2,7 @@ package order_repository
 
 import (
 	"context"
+	"fmt"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"time"
@@ -37,6 +38,14 @@ func (repo *OrderRepository) CreateNewOrder(ctx context.Context, newOrder models
 		return "", time.Time{}, err
 	}
 
+	// Добавляем defer для rollback при ошибке
+	defer func() {
+		if err != nil {
+			tx.Rollback(ctx)
+		}
+	}()
+
+	// В запросе не указываем поле number, чтобы сработал триггер
 	query := `
 INSERT INTO orders (
     customer_name,
@@ -45,8 +54,8 @@ INSERT INTO orders (
     delivery_address,
     total_amount,
     priority,
-    processed_by
-) VALUES ($1, $2, $3, $4, $5, COALESCE($6, 1), $7)
+    status
+) VALUES ($1, $2, $3, $4, $5, COALESCE($6, 1), 'received')
 RETURNING id, number, created_at
 `
 
@@ -60,53 +69,68 @@ RETURNING id, number, created_at
 		newOrder.OrderType,
 		newOrder.TableNumber,
 		newOrder.DeliveryAddress,
-		newOrder,
-		newOrder.Priority,
+		newOrder.TotalPrice,
 		newOrder.Priority,
 	).Scan(&id, &number, &createdAt)
 
-	query = `
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("ошибка при создании заказа: %w", err)
+	}
+
+	// Для отладки
+	fmt.Printf("Создан заказ - id: %d, number: %s, time: %s\n", id, number, createdAt.Format(time.RFC3339))
+
+	// Добавление элементов заказа
+	itemsQuery := `
 INSERT INTO order_items (
     order_id,
-	name,
-	quantity,
-	price
+    name,
+    quantity,
+    price
 ) VALUES ($1, $2, $3, $4)
 `
 
 	for _, item := range newOrder.OrderItems {
 		_, err = tx.Exec(
 			ctx,
-			query,
+			itemsQuery,
 			id,
 			item.Name,
 			item.Quantity,
 			item.Price,
 		)
 		if err != nil {
-			return "", time.Time{}, tx.Rollback(ctx)
+			return "", time.Time{}, fmt.Errorf("ошибка при добавлении элементов заказа: %w", err)
 		}
 	}
 
-	query = `
-INSERT INTO order_items (
+	// Добавление записи в лог статусов
+	statusQuery := `
+INSERT INTO order_status_log (
     order_id,
-	status,
-) VALUES ($1, $2, $3, $4)
+    status,
+    changed_by
+) VALUES ($1, $2, $3)
 `
 	_, err = tx.Exec(
 		ctx,
-		query,
+		statusQuery,
 		id,
 		"received",
+		"order-service",
 	)
 	if err != nil {
-		return "", time.Time{}, tx.Rollback(ctx)
+		return "", time.Time{}, fmt.Errorf("ошибка при добавлении записи статуса: %w", err)
 	}
 
-	return number, createdAt, tx.Commit(ctx)
-}
+	// Коммит транзакции
+	err = tx.Commit(ctx)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("ошибка при завершении транзакции: %w", err)
+	}
 
+	return number, createdAt, nil
+}
 func (repo *OrderRepository) GetNumberOrdersProcessed(ctx context.Context) (int, error) {
 	query := `SELECT COUNT(*) AS active_orders
 FROM orders

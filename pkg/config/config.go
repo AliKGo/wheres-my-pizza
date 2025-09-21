@@ -173,7 +173,6 @@ func FilePath(filePath string) {
 }
 
 func (c *Config) validate() error {
-	// Database
 	if c.Database.Host == "" {
 		return fmt.Errorf("database.host is required")
 	}
@@ -190,7 +189,7 @@ func (c *Config) validate() error {
 		return fmt.Errorf("database.database is required")
 	}
 	if c.Database.SSLMode == "" {
-		return fmt.Errorf("database.sslmode is required")
+		c.Database.SSLMode = "disable"
 	}
 
 	// RabbitMQ

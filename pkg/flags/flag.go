@@ -1,3 +1,4 @@
+// pkg/flags/flag.go
 package flags
 
 import (
@@ -8,10 +9,14 @@ import (
 )
 
 var (
-	defaultsPath  = "./config.yaml"
-	Port          = flag.Int("port", 3000, "port to listen on")
-	Mode          = flag.String("mode", "", "mode to run")
-	MaxConcurrent = flag.Int("max-concurrent", 50, "maximum concurrent messages to send")
+	defaultsPath      = "./config.yaml"
+	Port              = flag.Int("port", 3000, "port to listen on")
+	Mode              = flag.String("mode", "", "mode to run")
+	MaxConcurrent     = flag.Int("max-concurrent", 50, "maximum concurrent messages to send")
+	WorkerName        = flag.String("worker-name", "", "unique name for the kitchen worker")
+	OrderTypes        = flag.String("order-types", "", "comma-separated list of order types to handle (dine_in,takeout,delivery)")
+	HeartbeatInterval = flag.Int("heartbeat-interval", 30, "interval in seconds between worker heartbeats")
+	Prefetch          = flag.Int("prefetch", 1, "RabbitMQ prefetch count")
 )
 
 func ParseFlag() {
@@ -24,8 +29,8 @@ func ParseFlag() {
 	}
 
 	if *filePath != "" {
-		*filePath = defaultsPath
+		defaultsPath = *filePath
 	}
 
-	config.FilePath(*filePath)
+	config.FilePath(defaultsPath)
 }

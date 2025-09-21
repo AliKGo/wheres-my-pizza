@@ -1,3 +1,4 @@
+// internal/core/serivce/order/service.go
 package order
 
 import (
@@ -5,55 +6,71 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"time"
 	"wheres-my-pizza/internal/core/domain/models"
 	"wheres-my-pizza/internal/core/domain/types"
 	"wheres-my-pizza/internal/core/port"
 	"wheres-my-pizza/pkg/logger"
 )
 
+// Service implements the order service logic
 type Service struct {
 	log    logger.Logger
 	db     port.OrderRepository
 	rabbit port.RabbitMQ
 }
 
-func NewOrderService(db port.OrderRepository) *Service {
+// NewOrderService creates a new order service
+func NewOrderService(db port.OrderRepository, rabbit port.RabbitMQ) *Service {
 	log := logger.InitLogger("order", logger.LevelDebug)
 	return &Service{
-		db:  db,
-		log: log,
+		db:     db,
+		rabbit: rabbit,
+		log:    log,
 	}
 }
 
+// CreatNewOrder processes a new order request
 func (svc *Service) CreatNewOrder(ctx context.Context, newOrder models.CreateOrder) (models.OrderResponse, error) {
 	var orderResponse models.OrderResponse
 	err := validateOrder(newOrder)
 	if err != nil {
-		svc.log.Error(ctx, types.ActionOrderReceived, "error in validate order", err)
+		svc.log.Error(ctx, types.ActionValidationFailed, "error in validate order", err)
 		return models.OrderResponse{}, models.ErrorValidationFailed
 	}
 
+	// Calculate total amount
 	for _, item := range newOrder.OrderItems {
 		orderResponse.TotalAmount += item.Price * float64(item.Quantity)
 	}
 	newOrder.TotalPrice = orderResponse.TotalAmount
 
+	// Determine priority
 	newOrder.Priority = priority(orderResponse.TotalAmount)
-
-	var createAt time.Time
-
-	orderResponse.OrderNumber, createAt, err = svc.db.CreateNewOrder(ctx, newOrder)
+	
+	// Create order in database
+	orderResponse.OrderNumber, _, err = svc.db.CreateNewOrder(ctx, newOrder)
 	if err != nil {
-		svc.log.Error(ctx, types.ActionOrderReceived, "error in create order", err)
+		svc.log.Error(ctx, types.ActionDBTransactionFailed, "error in create order", err)
+		return models.OrderResponse{}, models.ErrorDbTransactionFailed
 	}
-	fmt.Println(createAt)
 
-	// тут надо добавить отправку в rabbitMQ b c этим orders закончится
+	// Set initial status
+	orderResponse.Status = "received"
+
+	// Send order to RabbitMQ
+	if err := svc.rabbit.PublishOrder(ctx, newOrder, orderResponse.OrderNumber); err != nil {
+		svc.log.Error(ctx, types.ActionRabbitmqPublishFailed, "error publishing order to RabbitMQ", err)
+		return models.OrderResponse{}, models.ErrorRabbitmqPublishFailed
+	}
+
+	svc.log.Debug(ctx, types.ActionOrderPublished, "order published to RabbitMQ",
+		"order_number", orderResponse.OrderNumber,
+	)
 
 	return orderResponse, nil
 }
 
+// validateOrder validates order data
 func validateOrder(order models.CreateOrder) error {
 	if len(order.CustomerName) < 1 || len(order.CustomerName) > 100 {
 		return errors.New("customer_name must be 1-100 characters")
@@ -110,6 +127,7 @@ func validateOrder(order models.CreateOrder) error {
 	return nil
 }
 
+// priority calculates order priority based on total price
 func priority(totalPrice float64) int {
 	if totalPrice > 100 {
 		return 10
@@ -118,10 +136,10 @@ func priority(totalPrice float64) int {
 	} else {
 		return 1
 	}
-
 }
 
-// true можно false нельзя
+// CheckConcurrent checks if a new order can be processed
+// true = can process, false = cannot process
 func (svc *Service) CheckConcurrent(ctx context.Context, limit int) bool {
 	count, err := svc.db.GetNumberOrdersProcessed(ctx)
 	if err != nil {

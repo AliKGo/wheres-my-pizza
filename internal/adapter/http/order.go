@@ -1,3 +1,4 @@
+// internal/adapter/http/order.go
 package http
 
 import (
@@ -8,7 +9,7 @@ import (
 	"net/http"
 	"wheres-my-pizza/internal/core/domain/models"
 	"wheres-my-pizza/internal/core/port"
-	"wheres-my-pizza/pkg/flags"
+	"wheres-my-pizza/pkg/flags" // Используется для MaxConcurrent
 )
 
 type OrderHandle struct {
@@ -33,6 +34,7 @@ func (h *OrderHandle) CreateNewOrder() http.HandlerFunc {
 
 		if ex := h.svc.CheckConcurrent(h.ctx, *flags.MaxConcurrent); !ex {
 			http.Error(w, "we have received the maximum number of orders to process", http.StatusInternalServerError)
+			return
 		}
 
 		var newOrder models.CreateOrder
